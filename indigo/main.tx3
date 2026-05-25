@@ -1,0 +1,1459 @@
+// Indigo Protocol — Synthetic Assets (iAssets) on Cardano
+// https://github.com/IndigoProtocol/indigo-smart-contracts
+// https://github.com/IndigoProtocol/indigo-upgrade-details-v2 (VX source)
+//
+// Users deposit ADA as collateral in CDPs to mint synthetic assets
+// (iUSD, iBTC, iETH, iSOL). Also supports Stability Pool deposits
+// and INDY token staking. All contracts are PlutusV2.
+//
+// On-chain version mapping (as of 2026-04-07):
+//   CDP validators:     VX (AdjustCDP has 3 fields, confirmed on-chain)
+//   SP validator:       VX (request/process pattern with AccountAction)
+//   Staking validator:  V1/V2 (empty datums Constr(0,[]), upgrade to VX pending)
+//   Collector:          V2 (unchanged between versions)
+
+// --- Parties ---
+
+// The user interacting with the protocol
+party User;
+
+// CDP Spend validator (holds CDP UTxOs with user collateral + CDP NFT)
+party CdpScript;
+
+// CDP output address — per-user: script payment (CdpScript) + user's staking key
+// On-chain these are addr1z... (type 0x11 = script + key staking)
+// Must be provided per-call since each user has a different staking credential
+party CdpUserAddr;
+
+// CDP Creator validator (holds CDP_CREATOR auth tokens)
+party CdpCreatorScript;
+
+// Collector validator (accumulates protocol fees)
+party CollectorScript;
+
+// Stability Pool validator (holds iAsset deposits + pool state)
+party StabilityPoolScript;
+
+// INDY Staking validator (holds staked INDY tokens)
+party StakingScript;
+
+// --- Environment ---
+// Instance-level config — same for all Indigo mainnet users.
+
+env {
+    // -- Minting policy IDs --
+    iasset_policy_id: Bytes,                 // iAsset minting policy (iUSD, iBTC, etc.)
+    cdp_nft_policy_id: Bytes,                // CDP NFT minting policy
+    cdp_creator_policy_id: Bytes,            // CDP_CREATOR auth token policy
+    staking_manager_nft_policy_id: Bytes,    // STAKING_MANAGER_NFT (singleton NFT)
+    staking_position_policy_id: Bytes,       // STAKING_POSITION (minted/burned per position)
+    indy_policy_id: Bytes,                   // INDY governance/staking token
+
+    // -- Token names (hex) --
+    cdp_nft_name: Bytes,                     // "CDP"
+    cdp_creator_name: Bytes,                 // "CDP_CREATOR"
+    staking_manager_nft_name: Bytes,         // "STAKING_MANAGER_NFT"
+    staking_position_name: Bytes,            // "STAKING_POSITION"
+    indy_name: Bytes,                        // "INDY"
+
+    // -- Reference script UTxOs --
+    cdp_spend_ref: UtxoRef,                  // CDP spend validator ref script
+    cdp_creator_ref: UtxoRef,                // CDP creator validator ref script
+    collector_ref: UtxoRef,                  // Collector validator ref script
+    iasset_mint_ref: UtxoRef,                // iAsset minting policy ref script
+    cdp_nft_mint_ref: UtxoRef,               // CDP NFT minting policy ref script
+    stability_pool_ref: UtxoRef,             // Stability Pool validator ref script
+    staking_ref: UtxoRef,                    // INDY Staking validator ref script
+    staking_position_mint_ref: UtxoRef,      // STAKING_POSITION mint policy ref script
+}
+
+// --- Types ---
+
+// CDP Datum — represents a Collateralized Debt Position
+// On-chain: Constr(0, [Constr(0, [Maybe<PKH>, TokenName, Int, Constr(interest)])])
+// Double-wrapped: outer Constr(0) = CDPDatum variant, inner Constr(0) = record fields.
+// NOTE: On-chain has 4 fields (incl. interest tracking), GitHub shows 3.
+type CDPDatum {
+    cdp_inner: CDPFields,
+}
+
+// Inner CDP fields (produces the inner Constr(0, [fields...]))
+type CDPFields {
+    cdp_owner: MaybePkh,
+    cdp_iasset: Bytes,
+    cdp_minted_amount: Int,
+    cdp_interest: CdpInterest,
+}
+
+// Maybe<PaymentPubKeyHash> — Nothing means CDP is frozen
+type MaybePkh {
+    JustPkh {
+        value: Bytes,
+    },
+    NothingPkh,
+}
+
+// CDPFees — VX interest/fee tracking (variant type)
+//   Constr(0) = ActiveCDPInterestTracking { lastSettled, unitaryInterestSnapshot }
+//   Constr(1) = FrozenCDPAccumulatedFees { lovelacesTreasury, lovelacesIndyStakers }
+type CdpInterest {
+    ActiveTracking {
+        timestamp: Int,
+        accumulator: Int,
+    },
+    FrozenFees {
+        treasury: Int,
+        stakers: Int,
+    },
+}
+
+// Oracle Datum — on-chain structure (read from oracle reference input)
+// Constr(0, [nonce: Int, price: OnChainDecimal, expiration: POSIXTime])
+// TX3 can read reference input datums via `datum_is` in reference blocks.
+// Fields accessible as: oracle_data.od_nonce, oracle_data.od_price, oracle_data.od_expiration
+// NOTE: timestamp_ms and interest_accumulator are NOT from this oracle — they are
+// caller-provided values. The oracle is referenced for on-chain validator checks (price).
+type OracleDatum {
+    od_nonce: Int,
+    od_price: OnChainDecimal,
+    od_expiration: Int,
+}
+
+// OnChainDecimal — wrapper for decimal values (Constr(0, [Int]))
+type OnChainDecimal {
+    ocd_value: Int,
+}
+
+// CDP Redeemer — V2 constructor indices (from indigo-upgrade-details-v2)
+// NOTE: V2 reorder differs from V1! Liquidate moved from index 2 to 6.
+type CDPRedeemer {
+    AdjustCDP {
+        a_current_time: Int,
+        a_minted_change: Int,
+        a_collateral_change: Int,
+    },
+    CloseCDP {
+        c_current_time: Int,
+    },
+    RedeemCDP {
+        r_current_time: Int,
+    },
+    FreezeCDP {
+        f_current_time: Int,
+    },
+    MergeCDPs,          // 4
+    MergeAuxiliary {
+        main_merge_utxo_hash: Bytes,
+        main_merge_utxo_idx: Int,
+    },
+    LiquidateCDP,       // 6
+    UpdateAsset,        // 7
+    UpgradeVersion,     // 8
+}
+
+// CDP Creator Redeemer
+// On-chain: Constr(0, [owner_pkh, mint_amount, collateral, timestamp])
+type CDPCreatorRedeemer {
+    CreateCDP {
+        owner_pkh: Bytes,
+        mint_amount: Int,
+        collateral: Int,
+        timestamp: Int,
+    },
+}
+
+// Collector Redeemer
+type CollectorRedeemer {
+    Collect,            // 0
+}
+
+// Unit datum — used by Collector and CDPCreator outputs
+type UnitDatum {
+}
+
+// StabilityPoolSnapshot — shared between pool and account datums
+// On-chain: Constr(0, [SPInteger, SPInteger, SPInteger, Int, Int])
+type StabilityPoolSnapshot {
+    snapshot_p: Int,
+    snapshot_d: Int,
+    snapshot_s: Int,
+    snapshot_epoch: Int,
+    snapshot_scale: Int,
+}
+
+// Maybe<AccountAction> — used in AccountContent.accRequest
+type MaybeAction {
+    JustAction {
+        act_value: AccountAction,
+    },
+    NothingAction,
+}
+
+// AccountAction — V2 request types for SP operations
+// On-chain: Create=Constr(0,[]), Adjust=Constr(1,[Int,Address]), Close=Constr(2,[Address])
+type AccountAction {
+    ActCreate,
+    ActAdjust {
+        act_amount: Int,
+        act_output_addr: Bytes,
+    },
+    ActClose {
+        act_close_addr: Bytes,
+    },
+}
+
+// Stability Datum — V2 on-chain sum type with 3 variants
+//   Constr(0) = pool state (StabilityPoolContent)
+//   Constr(1) = user account (AccountContent)
+//   Constr(2) = snapshot epoch-to-scale-to-sum
+// V2: pool and account are double-wrapped via Content types
+type StabilityDatum {
+    PoolState {
+        sp_content: PoolContent,
+    },
+    Account {
+        acc_content: AccountContent,
+    },
+}
+
+// V2 StabilityPoolContent — inner record for pool state
+type PoolContent {
+    sp_iasset: Bytes,
+    sp_snapshot: StabilityPoolSnapshot,
+}
+
+// V2 AccountContent — inner record for user account
+// Has 4 fields (V1 had 3, V2 added accRequest)
+type AccountContent {
+    acc_owner: Bytes,
+    acc_iasset: Bytes,
+    acc_snapshot: StabilityPoolSnapshot,
+    acc_request: MaybeAction,
+}
+
+// Stability Pool Redeemer — V2 (request/process pattern)
+// V2 changed from direct actions to request/process batching model
+type StabilityPoolRedeemer {
+    SPRequestAction {
+        sp_action: AccountAction,
+    },
+    SPProcessRequest {
+        sp_request_ref_hash: Bytes,
+        sp_request_ref_idx: Int,
+    },
+    SPAnnulRequest,         // 2
+    SPLiquidateCDP,         // 3
+    SPRecordSnapshot,       // 4
+    SPUpgradeVersion,       // 5
+}
+
+
+// Staking Datum — V2/VX structured datums (confirmed via indigo-sdk
+// src/types/indigo/staking.ts and real on-chain CreateStakingPosition CBOR).
+// NOTE: Earlier investigation notes claimed "all staking datums are Constr(0,[])
+// empty" — that was wrong. Datums are fully structured per V1/V2 source.
+//
+// StakingDatum = Constr(0, [StakingManagerContent])   -- Manager variant
+//              | Constr(1, [StakingPositionContent])  -- Position variant
+type StakingDatum {
+    StakingManager {
+        sm_content: StakingManagerContent,
+    },
+    StakingPosition {
+        sp_content: StakingPositionContent,
+    },
+}
+
+// StakingManagerContent — Constr(0, [totalStake, managerSnapshot])
+type StakingManagerContent {
+    st_total_stake: Int,
+    st_manager_snapshot: RewardSnapshot,
+}
+
+// StakingPositionContent — Constr(0, [owner, lockedAmount, positionSnapshot])
+// lockedAmount is Map<PollId, LockedEntry> where LockedEntry models the
+// on-chain tuple (voteAmount, endTime) as Constr(0, [Int, Int]) to work around
+// tx3's lack of tuple types in datums.
+type StakingPositionContent {
+    st_owner: Bytes,
+    st_locked_amount: Map<Int, LockedEntry>,
+    st_position_snapshot: RewardSnapshot,
+}
+
+// RewardSnapshot — Constr(0, [snapshotAda])
+type RewardSnapshot {
+    rs_snapshot_ada: Int,
+}
+
+// LockedEntry — on-chain: (voteAmount: Int, endTime: POSIXTime)
+// Modeled as a Constr(0, [Int, Int]) since tx3 doesn't support tuple datums.
+type LockedEntry {
+    le_vote_amount: Int,
+    le_end_time: Int,
+}
+
+// Staking Redeemer — V2/VX (Unlock removed, UpgradeVersion moved to 6)
+type StakingRedeemer {
+    StCreateStakingPosition {
+        st_pkh: Bytes,
+    },
+    StUpdateTotalStake,     // 1
+    StDistribute,           // 2
+    StAdjustStakedAmount {
+        st_amount: Int,
+    },
+    StUnstake,              // 4
+    StLock,                 // 5
+    StUpgradeVersion,       // 6 (was Unlock=6, UpgradeVersion=7 in V1)
+}
+
+// --- Transactions ---
+
+// ============================================================
+// 1. CREATE CDP [VX on-chain]
+// ============================================================
+// Deposit ADA as collateral, mint CDP NFT + iAsset tokens.
+//
+// Consumes: Collector UTxO (continuity) + CDPCreator UTxO (auth)
+// Mints: +1 CDP NFT, +N iAsset tokens
+// Outputs: New CDP UTxO at CdpScript, return Collector + CDPCreator,
+//          user gets minted iAssets + change
+//
+// Reference inputs: validator scripts + oracle/config data UTxOs
+tx create_cdp(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    mint_amount: Int,
+    collateral_lovelace: Int,
+    timestamp_ms: Int,
+    interest_accumulator: Int,
+    collector_utxo: UtxoRef,
+    creator_utxo: UtxoRef,
+    oracle_utxo: UtxoRef,
+    iasset_config_utxo: UtxoRef,
+    cdp_manager_utxo: UtxoRef,
+) {
+    locals {
+        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
+        iasset_tokens: AnyAsset(iasset_policy_id, iasset_name, mint_amount),
+        cdp_creator_token: AnyAsset(cdp_creator_policy_id, cdp_creator_name, 1),
+        credential_policy: iasset_policy_id,
+    }
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    // Reference scripts for validators
+    reference cdp_creator_script {
+        ref: cdp_creator_ref,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    reference iasset_mint_script {
+        ref: iasset_mint_ref,
+    }
+
+    reference cdp_nft_mint_script {
+        ref: cdp_nft_mint_ref,
+    }
+
+    // Reference inputs for oracle/config data (read-only, not consumed)
+    reference oracle_data {
+        ref: oracle_utxo,
+        datum_is: OracleDatum,
+    }
+
+    reference iasset_config {
+        ref: iasset_config_utxo,
+    }
+
+    reference cdp_manager_config {
+        ref: cdp_manager_utxo,
+    }
+
+    // Spend Collector UTxO (continuity — goes back to CollectorScript)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // Spend CDPCreator UTxO (auth token — goes back to CdpCreatorScript)
+    input creator_input {
+        ref: creator_utxo,
+        datum_is: UnitDatum,
+        redeemer: CDPCreatorRedeemer::CreateCDP {
+            owner_pkh: owner_pkh,
+            mint_amount: mint_amount,
+            collateral: collateral_lovelace,
+            timestamp: timestamp_ms,
+        },
+    }
+
+    // User provides ADA for collateral + fees
+    input* source {
+        from: User,
+        min_amount: Ada(collateral_lovelace) + fees,
+    }
+
+    // Mint CDP NFT (1 token identifying the CDP)
+    mint {
+        amount: cdp_nft,
+        redeemer: UnitDatum {},
+    }
+
+    // Mint iAsset tokens (e.g., iUSD)
+    mint {
+        amount: iasset_tokens,
+        redeemer: UnitDatum {},
+    }
+
+    // New CDP UTxO at the CDP user address (script payment + user staking key)
+    // Contains: collateral ADA + CDP NFT + inline CDPDatum (double-wrapped)
+    output cdp_output {
+        to: CdpUserAddr,
+        amount: Ada(collateral_lovelace) + cdp_nft,
+        datum: CDPDatum {
+            cdp_inner: CDPFields {
+                cdp_owner: MaybePkh::JustPkh {
+                    value: owner_pkh,
+                },
+                cdp_iasset: iasset_name,
+                cdp_minted_amount: mint_amount,
+                cdp_interest: CdpInterest::ActiveTracking {
+                    timestamp: timestamp_ms,
+                    accumulator: interest_accumulator,
+                },
+            },
+        },
+    }
+
+    // Return CDPCreator auth token (with inline unit datum)
+    output {
+        to: CdpCreatorScript,
+        amount: creator_input,
+        datum: UnitDatum {},
+    }
+
+    // Return Collector UTxO (with inline unit datum)
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // User gets minted iAssets + change
+    output {
+        to: User,
+        amount: source - Ada(collateral_lovelace) - fees + iasset_tokens,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 2. ADJUST CDP [VX on-chain — redeemer has 3 fields: ts, iasset_change, collateral_change]
+// ============================================================
+// Modify an existing CDP: add/remove collateral or mint/burn iAssets.
+//
+// Consumes: CDP UTxO (continuity with updated datum) + Collector UTxO
+// Mints: +/- iAsset tokens (depending on adjustment direction)
+// The CDP NFT stays with the CDP UTxO.
+//
+// For adding collateral only (no mint/burn), use adjust_cdp_collateral.
+// For minting more iAssets, use adjust_cdp_mint.
+// For burning iAssets (repaying debt), use adjust_cdp_burn.
+
+// 2a. Adjust CDP — Mint more iAssets (increase debt)
+// On-chain always includes a companion Staking input with Constr(4) redeemer
+tx adjust_cdp_mint(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    cdp_utxo: UtxoRef,
+    collector_utxo: UtxoRef,
+    staking_utxo: UtxoRef,
+    additional_mint: Int,
+    new_minted_total: Int,
+    new_collateral: Int,
+    timestamp_ms: Int,
+    accumulator: Int,
+    oracle_utxo: UtxoRef,
+    iasset_config_utxo: UtxoRef,
+    cdp_manager_utxo: UtxoRef,
+) {
+    locals {
+        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
+        new_iassets: AnyAsset(iasset_policy_id, iasset_name, additional_mint),
+    }
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference cdp_spend_script {
+        ref: cdp_spend_ref,
+    }
+
+    reference staking_script {
+        ref: staking_ref,
+    }
+
+    reference oracle_data {
+        ref: oracle_utxo,
+        datum_is: OracleDatum,
+    }
+
+    reference iasset_config {
+        ref: iasset_config_utxo,
+    }
+
+    reference cdp_manager_config {
+        ref: cdp_manager_utxo,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    reference iasset_mint_script {
+        ref: iasset_mint_ref,
+    }
+
+    // Spend existing CDP UTxO
+    input cdp_input {
+        ref: cdp_utxo,
+        datum_is: CDPDatum,
+        redeemer: CDPRedeemer::AdjustCDP {
+            a_current_time: timestamp_ms,
+            a_minted_change: additional_mint,
+            a_collateral_change: 0,
+        },
+    }
+
+    // Companion Staking input (required by on-chain validators)
+    input staking_input {
+        ref: staking_utxo,
+        datum_is: UnitDatum,
+        redeemer: StakingRedeemer::StUnstake {},
+    }
+
+    // Spend Collector UTxO (continuity)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // User provides additional ADA if needed
+    input* source {
+        from: User,
+        min_amount: fees,
+    }
+
+    // Mint additional iAsset tokens
+    mint {
+        amount: new_iassets,
+        redeemer: UnitDatum {},
+    }
+
+    // Updated CDP UTxO (same address, updated datum)
+    output cdp_output {
+        to: CdpUserAddr,
+        amount: Ada(new_collateral) + cdp_nft,
+        datum: CDPDatum {
+            cdp_inner: CDPFields {
+                cdp_owner: MaybePkh::JustPkh {
+                    value: owner_pkh,
+                },
+                cdp_iasset: iasset_name,
+                cdp_minted_amount: new_minted_total,
+                cdp_interest: CdpInterest::ActiveTracking {
+                    timestamp: timestamp_ms,
+                    accumulator: accumulator,
+                },
+            },
+        },
+    }
+
+    // Return Staking UTxO (with empty datum)
+    output {
+        to: StakingScript,
+        amount: staking_input,
+        datum: UnitDatum {},
+    }
+
+    // Return Collector UTxO (with inline unit datum)
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // User gets newly minted iAssets + change
+    output {
+        to: User,
+        amount: source + cdp_input - Ada(new_collateral) - cdp_nft - fees + new_iassets,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// 2b. Adjust CDP — Burn iAssets (repay debt, optionally withdraw collateral)
+// On-chain redeemer: Constr(0, [timestamp, -burn_amount, collateral_change])
+// On-chain always includes a companion Staking input with Constr(4) redeemer
+tx adjust_cdp_burn(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    cdp_utxo: UtxoRef,
+    collector_utxo: UtxoRef,
+    staking_utxo: UtxoRef,
+    burn_amount: Int,
+    new_minted_total: Int,
+    new_collateral: Int,
+    timestamp_ms: Int,
+    accumulator: Int,
+    collateral_change: Int,
+    oracle_utxo: UtxoRef,
+    iasset_config_utxo: UtxoRef,
+    cdp_manager_utxo: UtxoRef,
+) {
+    locals {
+        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
+        iassets_to_burn: AnyAsset(iasset_policy_id, iasset_name, burn_amount),
+    }
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference cdp_spend_script {
+        ref: cdp_spend_ref,
+    }
+
+    reference staking_script {
+        ref: staking_ref,
+    }
+
+    reference oracle_data {
+        ref: oracle_utxo,
+        datum_is: OracleDatum,
+    }
+
+    reference iasset_config {
+        ref: iasset_config_utxo,
+    }
+
+    reference cdp_manager_config {
+        ref: cdp_manager_utxo,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    reference iasset_mint_script {
+        ref: iasset_mint_ref,
+    }
+
+    // Spend existing CDP UTxO
+    input cdp_input {
+        ref: cdp_utxo,
+        datum_is: CDPDatum,
+        redeemer: CDPRedeemer::AdjustCDP {
+            a_current_time: timestamp_ms,
+            a_minted_change: 0 - burn_amount,
+            a_collateral_change: collateral_change,
+        },
+    }
+
+    // Companion Staking input (required by on-chain validators)
+    input staking_input {
+        ref: staking_utxo,
+        datum_is: UnitDatum,
+        redeemer: StakingRedeemer::StUnstake {},
+    }
+
+    // Spend Collector UTxO (continuity)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // User provides iAssets to burn + fees
+    input* source {
+        from: User,
+        min_amount: fees + iassets_to_burn,
+    }
+
+    // Burn iAsset tokens (repay debt)
+    burn {
+        amount: iassets_to_burn,
+        redeemer: UnitDatum {},
+    }
+
+    // Updated CDP UTxO (less debt)
+    output cdp_output {
+        to: CdpUserAddr,
+        amount: Ada(new_collateral) + cdp_nft,
+        datum: CDPDatum {
+            cdp_inner: CDPFields {
+                cdp_owner: MaybePkh::JustPkh {
+                    value: owner_pkh,
+                },
+                cdp_iasset: iasset_name,
+                cdp_minted_amount: new_minted_total,
+                cdp_interest: CdpInterest::ActiveTracking {
+                    timestamp: timestamp_ms,
+                    accumulator: accumulator,
+                },
+            },
+        },
+    }
+
+    // Return Staking UTxO (with empty datum)
+    output {
+        to: StakingScript,
+        amount: staking_input,
+        datum: UnitDatum {},
+    }
+
+    // Return Collector UTxO (with inline unit datum)
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // User gets back freed collateral + change
+    output {
+        to: User,
+        amount: source + cdp_input - Ada(new_collateral) - cdp_nft - fees - iassets_to_burn,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 3. CLOSE CDP [VX on-chain — CloseCDP = Constr(1, [ts])]
+// ============================================================
+// Close a CDP: burn all outstanding iAsset debt, burn CDP NFT,
+// and recover all ADA collateral.
+//
+// Consumes: CDP UTxO + Collector UTxO + StabilityPool UTxO + Staking UTxO
+// Burns: -1 CDP NFT, -N iAsset tokens
+// Returns collateral to user.
+tx close_cdp(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    cdp_utxo: UtxoRef,
+    collector_utxo: UtxoRef,
+    stability_pool_utxo: UtxoRef,
+    staking_utxo: UtxoRef,
+    burn_amount: Int,
+    timestamp_ms: Int,
+    pool_iasset: Bytes,
+    sp_snapshot_p: Int,
+    sp_snapshot_d: Int,
+    sp_snapshot_s: Int,
+    sp_snapshot_epoch: Int,
+    sp_snapshot_scale: Int,
+    oracle_utxo: UtxoRef,
+    iasset_config_utxo: UtxoRef,
+    cdp_manager_utxo: UtxoRef,
+) {
+    locals {
+        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
+        iassets_to_burn: AnyAsset(iasset_policy_id, iasset_name, burn_amount),
+    }
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    // Reference scripts for all validators involved
+    reference cdp_spend_script {
+        ref: cdp_spend_ref,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    reference iasset_mint_script {
+        ref: iasset_mint_ref,
+    }
+
+    reference cdp_nft_mint_script {
+        ref: cdp_nft_mint_ref,
+    }
+
+    reference sp_script {
+        ref: stability_pool_ref,
+    }
+
+    reference staking_script {
+        ref: staking_ref,
+    }
+
+    // Reference inputs for oracle/config data
+    reference oracle_data {
+        ref: oracle_utxo,
+        datum_is: OracleDatum,
+    }
+
+    reference iasset_config {
+        ref: iasset_config_utxo,
+    }
+
+    reference cdp_manager_config {
+        ref: cdp_manager_utxo,
+    }
+
+    // Spend CDP UTxO (close it)
+    input cdp_input {
+        ref: cdp_utxo,
+        datum_is: CDPDatum,
+        redeemer: CDPRedeemer::CloseCDP {
+            c_current_time: timestamp_ms,
+        },
+    }
+
+    // Spend Collector UTxO (continuity)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // Spend Stability Pool UTxO (continuity)
+    input sp_input {
+        ref: stability_pool_utxo,
+        datum_is: StabilityDatum,
+        redeemer: StabilityPoolRedeemer::SPLiquidateCDP {},
+    }
+
+    // Spend Staking UTxO (continuity)
+    input staking_input {
+        ref: staking_utxo,
+        datum_is: UnitDatum,
+        redeemer: StakingRedeemer::StUnstake {},
+    }
+
+    // User provides iAssets to burn + fees
+    input* source {
+        from: User,
+        min_amount: fees + iassets_to_burn,
+    }
+
+    // Burn CDP NFT
+    burn {
+        amount: cdp_nft,
+        redeemer: UnitDatum {},
+    }
+
+    // Burn iAsset debt
+    burn {
+        amount: iassets_to_burn,
+        redeemer: UnitDatum {},
+    }
+
+    // Return Staking UTxO (updated)
+    output {
+        to: StakingScript,
+        amount: staking_input,
+    }
+
+    // Return Collector UTxO
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // Return Stability Pool UTxO (updated with burned iAssets removed)
+    output sp_output {
+        to: StabilityPoolScript,
+        amount: sp_input - iassets_to_burn,
+        datum: StabilityDatum::PoolState {
+            sp_content: PoolContent {
+                sp_iasset: pool_iasset,
+                sp_snapshot: StabilityPoolSnapshot {
+                    snapshot_p: sp_snapshot_p,
+                    snapshot_d: sp_snapshot_d,
+                    snapshot_s: sp_snapshot_s,
+                    snapshot_epoch: sp_snapshot_epoch,
+                    snapshot_scale: sp_snapshot_scale,
+                },
+            },
+        },
+    }
+
+    // User gets back all collateral + change
+    output {
+        to: User,
+        amount: source + cdp_input - cdp_nft - fees - iassets_to_burn,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 4. CREATE STABILITY POOL ACCOUNT [VX on-chain — request/process pattern]
+// ============================================================
+// V2 uses request/process: user submits a RequestAction(Create),
+// then a batcher processes it with ProcessRequest.
+// This tx is the user-facing REQUEST step.
+//
+// Consumes: Account UTxO at SP address (continuity — sets accRequest)
+// The account UTxO is created/updated with accRequest = Just(Create)
+tx create_sp_account(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    deposit_amount: Int,
+    collector_utxo: UtxoRef,
+    sp_utxo: UtxoRef,
+    sp_snapshot_p: Int,
+    sp_snapshot_d: Int,
+    sp_snapshot_s: Int,
+    sp_snapshot_epoch: Int,
+    sp_snapshot_scale: Int,
+) {
+    locals {
+        iasset_deposit: AnyAsset(iasset_policy_id, iasset_name, deposit_amount),
+    }
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference sp_script {
+        ref: stability_pool_ref,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    // Spend Stability Pool UTxO (continuity)
+    input sp_input {
+        ref: sp_utxo,
+        datum_is: StabilityDatum,
+        redeemer: StabilityPoolRedeemer::SPRequestAction {
+            sp_action: AccountAction::ActCreate {},
+        },
+    }
+
+    // Spend Collector UTxO (continuity)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // User provides iAsset tokens + ADA for fees
+    input* source {
+        from: User,
+        min_amount: fees + iasset_deposit,
+    }
+
+    // Updated Stability Pool UTxO
+    output sp_output {
+        to: StabilityPoolScript,
+        amount: sp_input + iasset_deposit,
+        datum: StabilityDatum::PoolState {
+            sp_content: PoolContent {
+                sp_iasset: iasset_name,
+                sp_snapshot: StabilityPoolSnapshot {
+                    snapshot_p: sp_snapshot_p,
+                    snapshot_d: sp_snapshot_d,
+                    snapshot_s: sp_snapshot_s,
+                    snapshot_epoch: sp_snapshot_epoch,
+                    snapshot_scale: sp_snapshot_scale,
+                },
+            },
+        },
+    }
+
+    // Return Collector UTxO
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // User change
+    output {
+        to: User,
+        amount: source - fees - iasset_deposit,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 5. ADJUST STABILITY POOL ACCOUNT [VX on-chain — RequestAction(Adjust)]
+// ============================================================
+// User requests an adjustment to their SP account deposit.
+// V2: uses RequestAction(Adjust { amount, outputAddress })
+tx adjust_sp_account(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    deposit_change: Int,
+    output_addr: Bytes,
+    collector_utxo: UtxoRef,
+    account_utxo: UtxoRef,
+    acc_snapshot_p: Int,
+    acc_snapshot_d: Int,
+    acc_snapshot_s: Int,
+    acc_snapshot_epoch: Int,
+    acc_snapshot_scale: Int,
+) {
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference sp_script {
+        ref: stability_pool_ref,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    // Spend Account UTxO (update accRequest field)
+    input account_input {
+        ref: account_utxo,
+        datum_is: StabilityDatum,
+        redeemer: StabilityPoolRedeemer::SPRequestAction {
+            sp_action: AccountAction::ActAdjust {
+                act_amount: deposit_change,
+                act_output_addr: output_addr,
+            },
+        },
+    }
+
+    // Spend Collector UTxO (continuity)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // User provides ADA for fees
+    input* source {
+        from: User,
+        min_amount: fees,
+    }
+
+    // Updated Account UTxO — set accRequest to Adjust
+    output account_output {
+        to: StabilityPoolScript,
+        amount: account_input,
+        datum: StabilityDatum::Account {
+            acc_content: AccountContent {
+                acc_owner: owner_pkh,
+                acc_iasset: iasset_name,
+                acc_snapshot: StabilityPoolSnapshot {
+                    snapshot_p: acc_snapshot_p,
+                    snapshot_d: acc_snapshot_d,
+                    snapshot_s: acc_snapshot_s,
+                    snapshot_epoch: acc_snapshot_epoch,
+                    snapshot_scale: acc_snapshot_scale,
+                },
+                acc_request: MaybeAction::JustAction {
+                    act_value: AccountAction::ActAdjust {
+                        act_amount: deposit_change,
+                        act_output_addr: output_addr,
+                    },
+                },
+            },
+        },
+    }
+
+    // Return Collector UTxO
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // User change
+    output {
+        to: User,
+        amount: source - fees,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 6. CLOSE STABILITY POOL ACCOUNT [VX on-chain — RequestAction(Close)]
+// ============================================================
+// User requests closure of their SP account.
+// V2: uses RequestAction(Close { outputAddress })
+tx close_sp_account(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    output_addr: Bytes,
+    collector_utxo: UtxoRef,
+    account_utxo: UtxoRef,
+    acc_snapshot_p: Int,
+    acc_snapshot_d: Int,
+    acc_snapshot_s: Int,
+    acc_snapshot_epoch: Int,
+    acc_snapshot_scale: Int,
+) {
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference sp_script {
+        ref: stability_pool_ref,
+    }
+
+    reference collector_script {
+        ref: collector_ref,
+    }
+
+    // Spend Account UTxO (set accRequest = Just(Close))
+    input account_input {
+        ref: account_utxo,
+        datum_is: StabilityDatum,
+        redeemer: StabilityPoolRedeemer::SPRequestAction {
+            sp_action: AccountAction::ActClose {
+                act_close_addr: output_addr,
+            },
+        },
+    }
+
+    // Spend Collector UTxO (continuity)
+    input collector_input {
+        ref: collector_utxo,
+        datum_is: UnitDatum,
+        redeemer: CollectorRedeemer::Collect {},
+    }
+
+    // User provides ADA for fees
+    input* source {
+        from: User,
+        min_amount: fees,
+    }
+
+    // Updated Account UTxO — set accRequest to Close
+    output account_output {
+        to: StabilityPoolScript,
+        amount: account_input,
+        datum: StabilityDatum::Account {
+            acc_content: AccountContent {
+                acc_owner: owner_pkh,
+                acc_iasset: iasset_name,
+                acc_snapshot: StabilityPoolSnapshot {
+                    snapshot_p: acc_snapshot_p,
+                    snapshot_d: acc_snapshot_d,
+                    snapshot_s: acc_snapshot_s,
+                    snapshot_epoch: acc_snapshot_epoch,
+                    snapshot_scale: acc_snapshot_scale,
+                },
+                acc_request: MaybeAction::JustAction {
+                    act_value: AccountAction::ActClose {
+                        act_close_addr: output_addr,
+                    },
+                },
+            },
+        },
+    }
+
+    // Return Collector UTxO
+    output {
+        to: CollectorScript,
+        amount: collector_input,
+        datum: UnitDatum {},
+    }
+
+    // User change
+    output {
+        to: User,
+        amount: source - fees,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 7. CREATE STAKING POSITION [V2/VX on-chain — confirmed via indigo-sdk]
+// ============================================================
+// Stake INDY tokens to earn protocol fee rewards (ADA).
+// Consumes: Staking Manager UTxO (continuity — totalStake increases).
+// Mints:    +1 STAKING_POSITION NFT authenticating the new position.
+//
+// Reference: indigo-sdk src/contracts/staking.ts :: openPosition
+//
+// Caller must read the current Staking Manager datum off-chain and pass:
+//   - old_total_stake: current StakingManagerContent.totalStake
+//   - current_snapshot_ada: current managerSnapshot.snapshotAda
+// The new position's positionSnapshot is initialised to the same snapshot,
+// so the user starts earning rewards from now.
+tx create_staking(
+    owner_pkh: Bytes,
+    indy_amount: Int,
+    manager_utxo: UtxoRef,
+    old_total_stake: Int,
+    current_snapshot_ada: Int,
+) {
+    locals {
+        indy_tokens: AnyAsset(indy_policy_id, indy_name, indy_amount),
+        staking_position_nft: AnyAsset(staking_position_policy_id, staking_position_name, 1),
+        current_snapshot: RewardSnapshot {
+            rs_snapshot_ada: current_snapshot_ada,
+        },
+    }
+
+    reference staking_script {
+        ref: staking_ref,
+    }
+
+    reference staking_position_mint_script {
+        ref: staking_position_mint_ref,
+    }
+
+    // Spend Staking Manager UTxO (continuity — updated totalStake)
+    input manager_input {
+        ref: manager_utxo,
+        datum_is: StakingDatum,
+        redeemer: StakingRedeemer::StCreateStakingPosition {
+            st_pkh: owner_pkh,
+        },
+    }
+
+    // User provides INDY tokens + ADA for fees + min UTxO for position + minUTxO for change
+    input* source {
+        from: User,
+        min_amount: fees + indy_tokens + min_utxo(position_output) + min_utxo(change_output),
+    }
+
+    // Mint +1 STAKING_POSITION NFT (authenticates the new position UTxO)
+    mint {
+        amount: staking_position_nft,
+        redeemer: UnitDatum {},
+    }
+
+    // Updated Staking Manager — same assets, totalStake increased by indy_amount,
+    // snapshot unchanged (it only moves forward on Distribute).
+    output manager_output {
+        to: StakingScript,
+        amount: manager_input,
+        datum: StakingDatum::StakingManager {
+            sm_content: StakingManagerContent {
+                st_total_stake: old_total_stake + indy_amount,
+                st_manager_snapshot: current_snapshot,
+            },
+        },
+    }
+
+    // New Staking Position — owner, empty lockedAmount map, snapshot = manager's current.
+    output position_output {
+        to: StakingScript,
+        amount: min_utxo(position_output) + indy_tokens + staking_position_nft,
+        datum: StakingDatum::StakingPosition {
+            sp_content: StakingPositionContent {
+                st_owner: owner_pkh,
+                st_locked_amount: {},
+                st_position_snapshot: current_snapshot,
+            },
+        },
+    }
+
+    // User change
+    output change_output {
+        to: User,
+        amount: source - fees - indy_tokens - min_utxo(position_output),
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 8. ADJUST STAKING POSITION [V1/V2 on-chain — empty datums]
+// ============================================================
+// Add or remove INDY from existing staking position.
+// Uses datum field access to propagate lockedAmount and snapshot from input.
+//
+// NOTE: the Collector validator is NOT referenced by the on-chain
+// validateAdjustStakedAmount. See
+// indigo-smart-contracts/src/Indigo/Contracts/Staking/OnChain.hs.
+tx adjust_staking(
+    owner_pkh: Bytes,
+    indy_policy_id: Bytes,
+    indy_asset_name: Bytes,
+    adjust_amount: Int,
+    position_utxo: UtxoRef,
+) {
+    locals {
+        indy_change: AnyAsset(indy_policy_id, indy_asset_name, adjust_amount),
+    }
+
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference staking_script {
+        ref: staking_ref,
+    }
+
+    // Spend Staking Position UTxO
+    input position_input {
+        ref: position_utxo,
+        datum_is: UnitDatum,
+        redeemer: StakingRedeemer::StAdjustStakedAmount {
+            st_amount: adjust_amount,
+        },
+    }
+
+    // User provides more INDY (if adding) + fees
+    input* source {
+        from: User,
+        min_amount: fees + indy_change,
+    }
+
+    // Updated Staking Position UTxO (on-chain uses empty datum)
+    output {
+        to: StakingScript,
+        amount: position_input + indy_change,
+        datum: UnitDatum {},
+    }
+
+    // User change
+    output {
+        to: User,
+        amount: source - fees - indy_change,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}
+
+// ============================================================
+// 9. UNSTAKE [V1/V2 on-chain — empty datums]
+// ============================================================
+// Close staking position entirely and withdraw all INDY + earned ADA rewards.
+//
+// NOTE: the Collector validator is NOT referenced by the on-chain
+// validateUnstake. See
+// indigo-smart-contracts/src/Indigo/Contracts/Staking/OnChain.hs.
+tx unstake(
+    owner_pkh: Bytes,
+    position_utxo: UtxoRef,
+) {
+    validity {
+        since_slot: tip_slot(),
+        until_slot: tip_slot() + 600,
+    }
+
+    reference staking_script {
+        ref: staking_ref,
+    }
+
+    // Spend Staking Position UTxO (consumed entirely)
+    input position_input {
+        ref: position_utxo,
+        datum_is: UnitDatum,
+        redeemer: StakingRedeemer::StUnstake {},
+    }
+
+    // User provides ADA for fees
+    input* source {
+        from: User,
+        min_amount: fees,
+    }
+
+    // User gets back all INDY + accumulated ADA rewards
+    output {
+        to: User,
+        amount: source + position_input - fees,
+    }
+
+    collateral {
+        from: User,
+        min_amount: Ada(5000000),
+    }
+
+    signers {
+        owner_pkh,
+    }
+}

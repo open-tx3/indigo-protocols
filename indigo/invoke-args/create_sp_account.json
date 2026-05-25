@@ -1,0 +1,14 @@
+{
+    "user": "addr1q9d0hux335wp6zqtjtumuk35c5782a6nks9f7zdmx2dc02uevednsw8qafmz2st0xl869ng4vh4h7vn609ara2veqvjsx0jw04",
+    "cdpuseraddr": "addr1zyyqtkz5rken7jzptp076np606r79lmsrqjrqw8sdn4kvr8laappp9ppy8elg20zd9ckuzdm3dg356ak2y5ka75wuj9sjwah49",
+    "owner_pkh": "5afbf0d18d1c1d080b92f9be5a34c53c757753b40a9f09bb329b87ab",
+    "iasset_name": "69555344",
+    "deposit_amount": 1000000,
+    "collector_utxo": "4016aa6a1cba79171659f72f9924127c662fad7bcabacc5207807e49f8d8be82#2",
+    "sp_utxo": "b7cd0f57cf359c42e108672f3e5fb9ea0ff28a8574297b38546399a1b39e7203#3",
+    "sp_snapshot_p": 0,
+    "sp_snapshot_d": 0,
+    "sp_snapshot_s": 0,
+    "sp_snapshot_epoch": 0,
+    "sp_snapshot_scale": 0
+}

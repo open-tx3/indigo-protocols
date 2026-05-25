@@ -1,0 +1,14 @@
+{
+    "user": "addr1q9q54wd08w2fy3znudwtz4ud3kjaqhl9fwfkuhg22wjn8jllaappp9ppy8elg20zd9ckuzdm3dg356ak2y5ka75wuj9shunuuj",
+    "cdpuseraddr": "addr1zyyqtkz5rken7jzptp076np606r79lmsrqjrqw8sdn4kvr8laappp9ppy8elg20zd9ckuzdm3dg356ak2y5ka75wuj9sjwah49",
+    "owner_pkh": "414ab9af3b94924453e35cb1578d8da5d05fe54b936e5d0a53a533cb",
+    "iasset_name": "69555344",
+    "collector_utxo": "4016aa6a1cba79171659f72f9924127c662fad7bcabacc5207807e49f8d8be82#2",
+    "account_utxo": "e5034d218bc8acd75aecef8ab9e3d3a8203f365b166a38a9473687bc5e351834#1",
+    "output_addr": "414ab9af3b94924453e35cb1578d8da5d05fe54b936e5d0a53a533cb",
+    "acc_snapshot_p": 0,
+    "acc_snapshot_d": 0,
+    "acc_snapshot_s": 0,
+    "acc_snapshot_epoch": 0,
+    "acc_snapshot_scale": 0
+}

@@ -1,0 +1,9 @@
+{
+    "user": "addr1qyn6zgeahkla9f493mqhfxu745c0agz07rf5yypsptmmcgdtkqe6caqp09uvv3ad20zttqt2fpv57aq9lrwxztvz9rvsndpqk8",
+    "cdpuseraddr": "addr1zyyqtkz5rken7jzptp076np606r79lmsrqjrqw8sdn4kvr8laappp9ppy8elg20zd9ckuzdm3dg356ak2y5ka75wuj9sjwah49",
+    "owner_pkh": "27a1233dbb7fba96a53d82e9373d6a187f504fc34d210302b9def086",
+    "indy_amount": 5037405,
+    "manager_utxo": "c54778b4fcb6741eed0d96763328673b4fa9947e0c6e5f29a735197fa94c7279#0",
+    "old_total_stake": 12940017495622,
+    "current_snapshot_ada": 1422553719171
+}

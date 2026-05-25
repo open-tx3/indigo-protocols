@@ -1,0 +1,10 @@
+[protocol]
+name = "indigo"
+scope = "indigoprotocol"
+version = "2.0.0"
+description = "Synthetic assets (iAssets) on Cardano via CDPs, Stability Pools, and INDY staking"
+main = "main.tx3"
+readme = "README.md"
+
+[ledger]
+family = "cardano"
