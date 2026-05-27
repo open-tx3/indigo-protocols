@@ -1,12 +1,20 @@
 # Indigo Protocol
 
-tx3 protocol for [Indigo Protocol](https://indigoprotocol.io/) — synthetic assets (iAssets) on Cardano.
+[Indigo](https://indigoprotocol.io/) is a decentralised synthetic-asset protocol on Cardano. Users lock ADA as collateral inside a Collateralised Debt Position (CDP) and mint *iAssets* — on-chain synthetic representations of real-world assets such as the US dollar (iUSD), Bitcoin (iBTC), Ether (iETH), and Solana (iSOL). The synthetic side is backed by over-collateralised ADA reserves and tracks underlying prices via on-chain oracles.
 
-> **Status: WIP** — This tx3 off-chain implementation is under testing and may not cover all edge cases yet.
+Indigo also runs two adjacent products in the same contract suite: a **Stability Pool**, where iAsset holders deposit synthetics to absorb under-collateralised CDPs in exchange for a share of liquidated collateral, and **INDY staking**, where holders of the governance token stake to vote on protocol parameters and earn protocol revenue. End users typically interact through the Indigo web app to open positions, borrow against ADA collateral, and earn yield on idle iAssets.
+
+This tx3 covers the full user-facing surface: CDP open / adjust / close, Stability Pool create / adjust / close (request side), and INDY staking. Batcher-side processing of SP requests is out of scope.
 
 ## Overview
 
-Indigo allows users to deposit ADA as collateral in Collateralized Debt Positions (CDPs) to mint synthetic assets like iUSD, iBTC, iETH, and iSOL. The protocol also supports Stability Pool deposits and INDY token staking. All on-chain contracts are PlutusV2.
+Indigo is a script-heavy protocol — every transaction consumes one or more reference inputs (oracles, iAsset config, CDP manager, collector) and at least one validator UTxO. Architecturally:
+
+- **CDPs** are individual script UTxOs holding ADA collateral, with the synthetic debt encoded in the datum. Minting an iAsset requires the on-chain interest accumulator and oracle price, both supplied as caller parameters.
+- **Stability Pool** uses a two-step pattern: the user submits a *request* UTxO to the pool, and a batcher later processes the request against the pool state. This tx3 implements the request side only.
+- **INDY staking** is a simple lock-with-NFT pattern; current on-chain validators use V1/V2 with empty datums.
+
+This implementation was built from on-chain analysis and verified against real mainnet transactions; the deployed contracts differ in several ways from the public GitHub source.
 
 ## Transactions
 
@@ -23,52 +31,61 @@ Indigo allows users to deposit ADA as collateral in Collateralized Debt Position
 | `stake_indy` | Stake INDY governance tokens |
 | `unstake_indy` | Unstake INDY governance tokens |
 
-## Important Considerations
+## Important considerations
 
-- **On-chain version mismatch:** The deployed contracts differ from the public GitHub source in several ways (extra datum fields, different redeemer structures). This tx3 was built from on-chain analysis and verified against real transactions.
-- **CDP validator version:** On-chain CDPs use VX (AdjustCDP with 3 fields). Staking validators still use V1/V2 with empty datums.
-- **Double-wrapped datums:** CDP datums are double-wrapped (`Constr(0, [Constr(0, [fields...])])`), which the type definitions reflect.
-- **Network profile required:** Policy IDs, reference script UTxOs, and script addresses must be configured per network.
-- **Reference scripts:** 7 different reference script UTxOs are required (CDP spend, CDP creator, collector, iAsset mint, CDP NFT mint, stability pool, staking).
-- **Stability Pool:** SP operations use a request/process two-step pattern — user submits a request, then a batcher processes it.
+- **On-chain version mismatch.** The deployed contracts differ from the public GitHub source in several ways (extra datum fields, different redeemer structures). This tx3 was built from on-chain analysis and verified against real transactions.
+- **CDP validator version.** On-chain CDPs use VX (`AdjustCDP` with 3 fields). Staking validators still use V1/V2 with empty datums.
+- **Double-wrapped datums.** CDP datums are double-wrapped (`Constr(0, [Constr(0, [fields...])])`), which the type definitions reflect.
+- **Network profile required.** Policy IDs, reference script UTxOs, and script addresses must be configured per network in the trix profile.
+- **Reference scripts.** Seven different reference-script UTxOs are required: CDP spend, CDP creator, collector, iAsset mint, CDP NFT mint, stability pool, staking.
+- **Stability Pool request/process pattern.** SP operations are two-step — user submits a request UTxO; a batcher processes it. This tx3 implements only the request side.
+- **Caller-provided oracle values.** Although `datum_is` lets tx3 read fields from reference inputs, `timestamp_ms` and the interest accumulator are independent of the oracle datum and must be supplied by the caller.
 
-## Caller Preparation
+## Caller preparation
 
-Many values must be queried from on-chain UTxO datums before invoking transactions. tx3 cannot read datum fields from reference inputs, so the caller must query them via Koios/Ogmios and pass them as parameters.
+Many values must be queried from on-chain UTxO datums before invoking a transaction. tx3 cannot read variant-type datum fields from spent inputs, so the Stability Pool transactions require the full snapshot tuple as explicit parameters.
 
 ### All CDP transactions
 
-- `timestamp_ms: Int` — Current POSIX timestamp in milliseconds (from oracle datum `od_expiration` or current time).
-- `interest_accumulator: Int` / `accumulator: Int` — The current interest accumulator value from the oracle datum.
-- `oracle_utxo`, `iasset_config_utxo`, `cdp_manager_utxo` — Reference input UTxOs that must be queried and provided.
+| Parameter | Source |
+|---|---|
+| `timestamp_ms: Int` | Current POSIX timestamp in milliseconds. Independent of the oracle's `od_expiration`. |
+| `interest_accumulator: Int` / `accumulator: Int` | Current interest accumulator value. Independent of `od_nonce`; computed off-chain. |
+| `oracle_utxo`, `iasset_config_utxo`, `cdp_manager_utxo` | Reference-input UTxOs queried on-chain. |
 
 ### `adjust_cdp_mint` / `adjust_cdp_burn`
 
-- `new_minted_total: Int` — The new total minted amount after the operation (current + additional or current - burn). Must be computed off-chain.
-- `new_collateral: Int` — The new collateral amount in the CDP. For mint: same as current. For burn: current - withdrawn.
+| Parameter | Source |
+|---|---|
+| `new_minted_total: Int` | New total minted amount after the operation (current ± additional). Computed off-chain. |
+| `new_collateral: Int` | New collateral amount in the CDP. For mint: unchanged. For burn: current − withdrawn. |
 
 ### `close_cdp`
 
-- `pool_iasset: Int` — The iAsset amount in the Stability Pool (from SP pool UTxO datum).
-- `sp_snapshot_p`, `sp_snapshot_d`, `sp_snapshot_s`, `sp_snapshot_epoch`, `sp_snapshot_scale` — All 5 fields from the Stability Pool's `snapshot` datum. These would be eliminated if tx3 supported reading reference input datums (~20 params total across SP txs).
+| Parameter | Source |
+|---|---|
+| `pool_iasset: Int` | iAsset amount in the Stability Pool (from SP pool UTxO datum). |
+| `sp_snapshot_p`, `sp_snapshot_d`, `sp_snapshot_s`, `sp_snapshot_epoch`, `sp_snapshot_scale` | All 5 fields from the Stability Pool's `snapshot` datum. Would be eliminated by tx3 support for variant-type datum field access on spent inputs (~20 params total across SP txs). |
 
 ### Stability Pool transactions (`create_sp_account`, `adjust_sp_account`, `close_sp_account`)
 
-- `sp_snapshot_*` or `acc_snapshot_*` (5 fields each) — Pool or account snapshot values from the corresponding on-chain datum.
-- `output_addr: Address` — The user's output address for receiving funds.
+| Parameter | Source |
+|---|---|
+| `sp_snapshot_*` (5 fields) | Pool snapshot values from the corresponding on-chain datum. |
+| `acc_snapshot_*` (5 fields) | Account snapshot values from the user's SP account datum. |
+| `output_addr: Address` | User's output address for receiving funds. |
 
 ### Staking transactions (`create_staking`, `adjust_staking`, `unstake`)
 
-- `indy_policy_id`, `indy_asset_name` — INDY token identifiers.
-- `staking_token_policy_id`, `staking_token_name` — Staking position NFT identifiers.
-- `manager_utxo`, `collector_utxo` — Protocol UTxOs that must be queried on-chain.
+| Parameter | Source |
+|---|---|
+| `indy_policy_id`, `indy_asset_name` | INDY token identifiers. |
+| `staking_token_policy_id`, `staking_token_name` | Staking-position NFT identifiers. |
+| `manager_utxo`, `collector_utxo` | Protocol UTxOs queried on-chain. |
 
-## tx3 Limitations
+## References
 
-Several tx3 language limitations affect this protocol. The most impactful: **cannot read datum fields from reference inputs**, requiring ~20 extra parameters that could otherwise be extracted automatically. For the full list, see [investigacion/tx3-limitations-indigo.md](investigacion/tx3-limitations-indigo.md).
-
-## Smart Contracts
-
-- PlutusV2
-- Source: [IndigoProtocol/indigo-smart-contracts](https://github.com/IndigoProtocol/indigo-smart-contracts)
-- VX upgrade: [IndigoProtocol/indigo-upgrade-details-v2](https://github.com/IndigoProtocol/indigo-upgrade-details-v2)
+- **Smart contracts:** PlutusV2 — [IndigoProtocol/indigo-smart-contracts](https://github.com/IndigoProtocol/indigo-smart-contracts)
+- **VX upgrade:** [IndigoProtocol/indigo-upgrade-details-v2](https://github.com/IndigoProtocol/indigo-upgrade-details-v2)
+- **Homepage / app:** [indigoprotocol.io](https://indigoprotocol.io/)
+- **Research notes:** [`investigacion/`](./investigacion/) — on-chain analysis, datum decoding, and version-mismatch findings.
