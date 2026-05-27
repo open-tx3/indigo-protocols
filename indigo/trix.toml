@@ -5,6 +5,7 @@ version = "2.0.0"
 description = "Synthetic assets (iAssets) on Cardano via CDPs, Stability Pools, and INDY staking"
 main = "main.tx3"
 readme = "README.md"
+logo = "logo.png"
 repository = "https://github.com/open-tx3/indigo-protocols"
 
 [ledger]
