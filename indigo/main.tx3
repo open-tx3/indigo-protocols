@@ -14,27 +14,27 @@
 
 // --- Parties ---
 
-// The user interacting with the protocol
+/// The end user interacting with the Indigo protocol.
 party User;
 
-// CDP Spend validator (holds CDP UTxOs with user collateral + CDP NFT)
+/// CDP Spend validator holding CDP UTxOs (user collateral + CDP NFT).
 party CdpScript;
 
-// CDP output address — per-user: script payment (CdpScript) + user's staking key
-// On-chain these are addr1z... (type 0x11 = script + key staking)
-// Must be provided per-call since each user has a different staking credential
+// On-chain these are addr1z... (type 0x11 = script + key staking).
+// Must be provided per-call since each user has a different staking credential.
+/// Per-user CDP output address: CdpScript payment + user's staking credential.
 party CdpUserAddr;
 
-// CDP Creator validator (holds CDP_CREATOR auth tokens)
+/// CDP Creator validator that holds the CDP_CREATOR auth tokens.
 party CdpCreatorScript;
 
-// Collector validator (accumulates protocol fees)
+/// Collector validator that accumulates protocol fees.
 party CollectorScript;
 
-// Stability Pool validator (holds iAsset deposits + pool state)
+/// Stability Pool validator holding iAsset deposits and pool state.
 party StabilityPoolScript;
 
-// INDY Staking validator (holds staked INDY tokens)
+/// INDY Staking validator holding staked INDY tokens and reward state.
 party StakingScript;
 
 // --- Environment ---
@@ -42,29 +42,48 @@ party StakingScript;
 
 env {
     // -- Minting policy IDs --
-    iasset_policy_id: Bytes,                 // iAsset minting policy (iUSD, iBTC, etc.)
-    cdp_nft_policy_id: Bytes,                // CDP NFT minting policy
-    cdp_creator_policy_id: Bytes,            // CDP_CREATOR auth token policy
-    staking_manager_nft_policy_id: Bytes,    // STAKING_MANAGER_NFT (singleton NFT)
-    staking_position_policy_id: Bytes,       // STAKING_POSITION (minted/burned per position)
-    indy_policy_id: Bytes,                   // INDY governance/staking token
+    /// Minting policy for synthetic iAssets (iUSD, iBTC, iETH, iSOL, ...).
+    iasset_policy_id: Bytes,
+    /// Minting policy for the per-CDP authentication NFT.
+    cdp_nft_policy_id: Bytes,
+    /// Minting policy for the CDP_CREATOR auth token.
+    cdp_creator_policy_id: Bytes,
+    /// Minting policy for the singleton STAKING_MANAGER_NFT.
+    staking_manager_nft_policy_id: Bytes,
+    /// Minting policy for STAKING_POSITION NFTs (minted/burned per position).
+    staking_position_policy_id: Bytes,
+    /// Minting policy for the INDY governance/staking token.
+    indy_policy_id: Bytes,
 
     // -- Token names (hex) --
-    cdp_nft_name: Bytes,                     // "CDP"
-    cdp_creator_name: Bytes,                 // "CDP_CREATOR"
-    staking_manager_nft_name: Bytes,         // "STAKING_MANAGER_NFT"
-    staking_position_name: Bytes,            // "STAKING_POSITION"
-    indy_name: Bytes,                        // "INDY"
+    /// CDP NFT asset name (hex of "CDP").
+    cdp_nft_name: Bytes,
+    /// CDP creator auth token asset name (hex of "CDP_CREATOR").
+    cdp_creator_name: Bytes,
+    /// Staking manager NFT asset name (hex of "STAKING_MANAGER_NFT").
+    staking_manager_nft_name: Bytes,
+    /// Staking position NFT asset name (hex of "STAKING_POSITION").
+    staking_position_name: Bytes,
+    /// INDY token asset name (hex of "INDY").
+    indy_name: Bytes,
 
     // -- Reference script UTxOs --
-    cdp_spend_ref: UtxoRef,                  // CDP spend validator ref script
-    cdp_creator_ref: UtxoRef,                // CDP creator validator ref script
-    collector_ref: UtxoRef,                  // Collector validator ref script
-    iasset_mint_ref: UtxoRef,                // iAsset minting policy ref script
-    cdp_nft_mint_ref: UtxoRef,               // CDP NFT minting policy ref script
-    stability_pool_ref: UtxoRef,             // Stability Pool validator ref script
-    staking_ref: UtxoRef,                    // INDY Staking validator ref script
-    staking_position_mint_ref: UtxoRef,      // STAKING_POSITION mint policy ref script
+    /// Reference UTxO carrying the CDP spend validator script.
+    cdp_spend_ref: UtxoRef,
+    /// Reference UTxO carrying the CDP creator validator script.
+    cdp_creator_ref: UtxoRef,
+    /// Reference UTxO carrying the Collector validator script.
+    collector_ref: UtxoRef,
+    /// Reference UTxO carrying the iAsset minting policy script.
+    iasset_mint_ref: UtxoRef,
+    /// Reference UTxO carrying the CDP NFT minting policy script.
+    cdp_nft_mint_ref: UtxoRef,
+    /// Reference UTxO carrying the Stability Pool validator script.
+    stability_pool_ref: UtxoRef,
+    /// Reference UTxO carrying the INDY Staking validator script.
+    staking_ref: UtxoRef,
+    /// Reference UTxO carrying the STAKING_POSITION minting policy script.
+    staking_position_mint_ref: UtxoRef,
 }
 
 // --- Types ---
@@ -320,17 +339,29 @@ type StakingRedeemer {
 //          user gets minted iAssets + change
 //
 // Reference inputs: validator scripts + oracle/config data UTxOs
+/// Open a new CDP: deposit ADA collateral and mint a CDP NFT plus iAsset debt.
 tx create_cdp(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name to mint (e.g. hex of "iUSD").
     iasset_name: Bytes,
+    /// Amount of iAsset tokens to mint against the deposited collateral.
     mint_amount: Int,
+    /// ADA collateral to lock in the CDP, in lovelace.
     collateral_lovelace: Int,
+    /// POSIX time (ms) used by the validator's time check.
     timestamp_ms: Int,
+    /// Current global interest accumulator value to snapshot on the new CDP.
     interest_accumulator: Int,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Current CDP Creator UTxO carrying the CDP_CREATOR auth token.
     creator_utxo: UtxoRef,
+    /// Oracle reference UTxO providing the iAsset price feed.
     oracle_utxo: UtxoRef,
+    /// Reference UTxO with the iAsset configuration datum.
     iasset_config_utxo: UtxoRef,
+    /// Reference UTxO with the CDP manager configuration datum.
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
@@ -476,21 +507,34 @@ tx create_cdp(
 // For minting more iAssets, use adjust_cdp_mint.
 // For burning iAssets (repaying debt), use adjust_cdp_burn.
 
-// 2a. Adjust CDP — Mint more iAssets (increase debt)
-// On-chain always includes a companion Staking input with Constr(4) redeemer
+// On-chain always includes a companion Staking input with Constr(4) redeemer.
+/// Adjust a CDP by minting additional iAssets, increasing the CDP's debt.
 tx adjust_cdp_mint(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name held by this CDP.
     iasset_name: Bytes,
+    /// Existing CDP UTxO to adjust.
     cdp_utxo: UtxoRef,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Companion Staking UTxO required by the on-chain validator.
     staking_utxo: UtxoRef,
+    /// Additional iAsset amount to mint on top of the current debt.
     additional_mint: Int,
+    /// New total minted iAsset amount to record on the CDP datum.
     new_minted_total: Int,
+    /// New collateral (lovelace) to record on the CDP datum.
     new_collateral: Int,
+    /// POSIX time (ms) used by the validator's time check.
     timestamp_ms: Int,
+    /// Current interest accumulator value to snapshot on the CDP.
     accumulator: Int,
+    /// Oracle reference UTxO providing the iAsset price feed.
     oracle_utxo: UtxoRef,
+    /// Reference UTxO with the iAsset configuration datum.
     iasset_config_utxo: UtxoRef,
+    /// Reference UTxO with the CDP manager configuration datum.
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
@@ -618,23 +662,37 @@ tx adjust_cdp_mint(
     }
 }
 
-// 2b. Adjust CDP — Burn iAssets (repay debt, optionally withdraw collateral)
-// On-chain redeemer: Constr(0, [timestamp, -burn_amount, collateral_change])
-// On-chain always includes a companion Staking input with Constr(4) redeemer
+// On-chain redeemer: Constr(0, [timestamp, -burn_amount, collateral_change]).
+// On-chain always includes a companion Staking input with Constr(4) redeemer.
+/// Adjust a CDP by burning iAssets to repay debt, optionally withdrawing collateral.
 tx adjust_cdp_burn(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name held by this CDP.
     iasset_name: Bytes,
+    /// Existing CDP UTxO to adjust.
     cdp_utxo: UtxoRef,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Companion Staking UTxO required by the on-chain validator.
     staking_utxo: UtxoRef,
+    /// iAsset amount to burn (positive value; sent as negative on-chain).
     burn_amount: Int,
+    /// New total minted iAsset amount to record on the CDP datum.
     new_minted_total: Int,
+    /// New collateral (lovelace) to record on the CDP datum.
     new_collateral: Int,
+    /// POSIX time (ms) used by the validator's time check.
     timestamp_ms: Int,
+    /// Current interest accumulator value to snapshot on the CDP.
     accumulator: Int,
+    /// Signed collateral change in lovelace (negative withdraws to the user).
     collateral_change: Int,
+    /// Oracle reference UTxO providing the iAsset price feed.
     oracle_utxo: UtxoRef,
+    /// Reference UTxO with the iAsset configuration datum.
     iasset_config_utxo: UtxoRef,
+    /// Reference UTxO with the CDP manager configuration datum.
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
@@ -771,23 +829,41 @@ tx adjust_cdp_burn(
 // Consumes: CDP UTxO + Collector UTxO + StabilityPool UTxO + Staking UTxO
 // Burns: -1 CDP NFT, -N iAsset tokens
 // Returns collateral to user.
+/// Close a CDP: burn all outstanding iAsset debt and the CDP NFT, recover collateral.
 tx close_cdp(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name held by this CDP.
     iasset_name: Bytes,
+    /// CDP UTxO to close.
     cdp_utxo: UtxoRef,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Current Stability Pool UTxO to consume for continuity.
     stability_pool_utxo: UtxoRef,
+    /// Current Staking UTxO to consume for continuity.
     staking_utxo: UtxoRef,
+    /// Outstanding iAsset debt to burn to fully close the CDP.
     burn_amount: Int,
+    /// POSIX time (ms) used by the validator's time check.
     timestamp_ms: Int,
+    /// iAsset asset name carried by the Stability Pool state.
     pool_iasset: Bytes,
+    /// Stability pool snapshot P value to record on the updated pool datum.
     sp_snapshot_p: Int,
+    /// Stability pool snapshot D value to record on the updated pool datum.
     sp_snapshot_d: Int,
+    /// Stability pool snapshot S value to record on the updated pool datum.
     sp_snapshot_s: Int,
+    /// Stability pool snapshot epoch to record on the updated pool datum.
     sp_snapshot_epoch: Int,
+    /// Stability pool snapshot scale to record on the updated pool datum.
     sp_snapshot_scale: Int,
+    /// Oracle reference UTxO providing the iAsset price feed.
     oracle_utxo: UtxoRef,
+    /// Reference UTxO with the iAsset configuration datum.
     iasset_config_utxo: UtxoRef,
+    /// Reference UTxO with the CDP manager configuration datum.
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
@@ -943,16 +1019,27 @@ tx close_cdp(
 //
 // Consumes: Account UTxO at SP address (continuity — sets accRequest)
 // The account UTxO is created/updated with accRequest = Just(Create)
+/// Submit a Stability Pool account creation request, depositing iAssets for batching.
 tx create_sp_account(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name being deposited into the pool.
     iasset_name: Bytes,
+    /// iAsset amount to deposit into the Stability Pool.
     deposit_amount: Int,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Current Stability Pool UTxO to consume for continuity.
     sp_utxo: UtxoRef,
+    /// Stability pool snapshot P value to record on the updated pool datum.
     sp_snapshot_p: Int,
+    /// Stability pool snapshot D value to record on the updated pool datum.
     sp_snapshot_d: Int,
+    /// Stability pool snapshot S value to record on the updated pool datum.
     sp_snapshot_s: Int,
+    /// Stability pool snapshot epoch to record on the updated pool datum.
     sp_snapshot_epoch: Int,
+    /// Stability pool snapshot scale to record on the updated pool datum.
     sp_snapshot_scale: Int,
 ) {
     locals {
@@ -1040,17 +1127,29 @@ tx create_sp_account(
 // ============================================================
 // User requests an adjustment to their SP account deposit.
 // V2: uses RequestAction(Adjust { amount, outputAddress })
+/// Submit a Stability Pool account adjustment request to change the deposit size.
 tx adjust_sp_account(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name held by this SP account.
     iasset_name: Bytes,
+    /// Signed iAsset amount delta requested (positive deposits, negative withdraws).
     deposit_change: Int,
+    /// Recipient address (raw bytes) for any funds returned by the batcher.
     output_addr: Bytes,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Existing Account UTxO to attach the adjustment request to.
     account_utxo: UtxoRef,
+    /// Account snapshot P value to preserve on the updated account datum.
     acc_snapshot_p: Int,
+    /// Account snapshot D value to preserve on the updated account datum.
     acc_snapshot_d: Int,
+    /// Account snapshot S value to preserve on the updated account datum.
     acc_snapshot_s: Int,
+    /// Account snapshot epoch to preserve on the updated account datum.
     acc_snapshot_epoch: Int,
+    /// Account snapshot scale to preserve on the updated account datum.
     acc_snapshot_scale: Int,
 ) {
 
@@ -1145,16 +1244,27 @@ tx adjust_sp_account(
 // ============================================================
 // User requests closure of their SP account.
 // V2: uses RequestAction(Close { outputAddress })
+/// Submit a Stability Pool account close request for batcher processing.
 tx close_sp_account(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// iAsset asset name held by this SP account.
     iasset_name: Bytes,
+    /// Recipient address (raw bytes) where the batcher will return the deposit.
     output_addr: Bytes,
+    /// Current Collector UTxO to consume for continuity.
     collector_utxo: UtxoRef,
+    /// Existing Account UTxO to attach the close request to.
     account_utxo: UtxoRef,
+    /// Account snapshot P value to preserve on the updated account datum.
     acc_snapshot_p: Int,
+    /// Account snapshot D value to preserve on the updated account datum.
     acc_snapshot_d: Int,
+    /// Account snapshot S value to preserve on the updated account datum.
     acc_snapshot_s: Int,
+    /// Account snapshot epoch to preserve on the updated account datum.
     acc_snapshot_epoch: Int,
+    /// Account snapshot scale to preserve on the updated account datum.
     acc_snapshot_scale: Int,
 ) {
     validity {
@@ -1255,11 +1365,17 @@ tx close_sp_account(
 //   - current_snapshot_ada: current managerSnapshot.snapshotAda
 // The new position's positionSnapshot is initialised to the same snapshot,
 // so the user starts earning rewards from now.
+/// Open a new INDY staking position and mint its authenticating STAKING_POSITION NFT.
 tx create_staking(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// INDY token amount to stake into the new position.
     indy_amount: Int,
+    /// Current Staking Manager UTxO whose totalStake will be updated.
     manager_utxo: UtxoRef,
+    /// Current StakingManagerContent.totalStake value, read off-chain.
     old_total_stake: Int,
+    /// Current managerSnapshot.snapshotAda value used to seed the position snapshot.
     current_snapshot_ada: Int,
 ) {
     locals {
@@ -1350,11 +1466,17 @@ tx create_staking(
 // NOTE: the Collector validator is NOT referenced by the on-chain
 // validateAdjustStakedAmount. See
 // indigo-smart-contracts/src/Indigo/Contracts/Staking/OnChain.hs.
+/// Add or remove INDY from an existing staking position.
 tx adjust_staking(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// INDY minting policy ID (passed explicitly to override env in tests).
     indy_policy_id: Bytes,
+    /// INDY asset name (passed explicitly to override env in tests).
     indy_asset_name: Bytes,
+    /// Signed INDY amount delta (positive adds stake, negative removes).
     adjust_amount: Int,
+    /// Existing Staking Position UTxO to adjust.
     position_utxo: UtxoRef,
 ) {
     locals {
@@ -1416,8 +1538,11 @@ tx adjust_staking(
 // NOTE: the Collector validator is NOT referenced by the on-chain
 // validateUnstake. See
 // indigo-smart-contracts/src/Indigo/Contracts/Staking/OnChain.hs.
+/// Close a staking position entirely and withdraw all INDY plus accumulated ADA rewards.
 tx unstake(
+    /// Owner payment public key hash (28 bytes).
     owner_pkh: Bytes,
+    /// Staking Position UTxO to consume and close.
     position_utxo: UtxoRef,
 ) {
     validity {
