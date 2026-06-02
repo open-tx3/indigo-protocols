@@ -326,6 +326,83 @@ type StakingRedeemer {
     StUpgradeVersion,       // 6 (was Unlock=6, UpgradeVersion=7 in V1)
 }
 
+// --- Functions ---
+// Pure helpers that inline at each call site (no semantic change).
+// Values sourced from inputs/references/locals are passed as parameters.
+
+// Build the CDP NFT asset (1 token identifying a CDP).
+fn cdp_nft() -> AnyAsset {
+    AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1)
+}
+
+// Build an iAsset token amount for the given asset name and quantity.
+fn iasset(name: Bytes, amount: Int) -> AnyAsset {
+    AnyAsset(iasset_policy_id, name, amount)
+}
+
+// Build an active-tracking CDP datum. `minted` differs per call site.
+fn active_cdp(
+    owner_pkh: Bytes,
+    iasset_name: Bytes,
+    minted: Int,
+    timestamp_ms: Int,
+    accumulator: Int,
+) -> CDPDatum {
+    CDPDatum {
+        cdp_inner: CDPFields {
+            cdp_owner: MaybePkh::JustPkh {
+                value: owner_pkh,
+            },
+            cdp_iasset: iasset_name,
+            cdp_minted_amount: minted,
+            cdp_interest: CdpInterest::ActiveTracking {
+                timestamp: timestamp_ms,
+                accumulator: accumulator,
+            },
+        },
+    }
+}
+
+// Build a stability-pool snapshot from its component values.
+fn snapshot(p: Int, d: Int, s: Int, epoch: Int, scale: Int) -> StabilityPoolSnapshot {
+    StabilityPoolSnapshot {
+        snapshot_p: p,
+        snapshot_d: d,
+        snapshot_s: s,
+        snapshot_epoch: epoch,
+        snapshot_scale: scale,
+    }
+}
+
+// Build a pool-state stability datum carrying the iAsset and its snapshot.
+fn pool_state(iasset: Bytes, p: Int, d: Int, s: Int, epoch: Int, scale: Int) -> StabilityDatum {
+    StabilityDatum::PoolState {
+        sp_content: PoolContent {
+            sp_iasset: iasset,
+            sp_snapshot: snapshot(p, d, s, epoch, scale),
+        },
+    }
+}
+
+// Build an account stability datum with a pending request action.
+fn account_with_request(
+    owner: Bytes,
+    iasset: Bytes,
+    snap: StabilityPoolSnapshot,
+    action: AccountAction,
+) -> StabilityDatum {
+    StabilityDatum::Account {
+        acc_content: AccountContent {
+            acc_owner: owner,
+            acc_iasset: iasset,
+            acc_snapshot: snap,
+            acc_request: MaybeAction::JustAction {
+                act_value: action,
+            },
+        },
+    }
+}
+
 // --- Transactions ---
 
 // ============================================================
@@ -365,8 +442,8 @@ tx create_cdp(
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
-        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
-        iasset_tokens: AnyAsset(iasset_policy_id, iasset_name, mint_amount),
+        cdp_nft: cdp_nft(),
+        iasset_tokens: iasset(iasset_name, mint_amount),
         cdp_creator_token: AnyAsset(cdp_creator_policy_id, cdp_creator_name, 1),
         credential_policy: iasset_policy_id,
     }
@@ -449,19 +526,7 @@ tx create_cdp(
     output cdp_output {
         to: CdpUserAddr,
         amount: Ada(collateral_lovelace) + cdp_nft,
-        datum: CDPDatum {
-            cdp_inner: CDPFields {
-                cdp_owner: MaybePkh::JustPkh {
-                    value: owner_pkh,
-                },
-                cdp_iasset: iasset_name,
-                cdp_minted_amount: mint_amount,
-                cdp_interest: CdpInterest::ActiveTracking {
-                    timestamp: timestamp_ms,
-                    accumulator: interest_accumulator,
-                },
-            },
-        },
+        datum: active_cdp(owner_pkh, iasset_name, mint_amount, timestamp_ms, interest_accumulator),
     }
 
     // Return CDPCreator auth token (with inline unit datum)
@@ -538,8 +603,8 @@ tx adjust_cdp_mint(
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
-        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
-        new_iassets: AnyAsset(iasset_policy_id, iasset_name, additional_mint),
+        cdp_nft: cdp_nft(),
+        new_iassets: iasset(iasset_name, additional_mint),
     }
 
     validity {
@@ -617,19 +682,7 @@ tx adjust_cdp_mint(
     output cdp_output {
         to: CdpUserAddr,
         amount: Ada(new_collateral) + cdp_nft,
-        datum: CDPDatum {
-            cdp_inner: CDPFields {
-                cdp_owner: MaybePkh::JustPkh {
-                    value: owner_pkh,
-                },
-                cdp_iasset: iasset_name,
-                cdp_minted_amount: new_minted_total,
-                cdp_interest: CdpInterest::ActiveTracking {
-                    timestamp: timestamp_ms,
-                    accumulator: accumulator,
-                },
-            },
-        },
+        datum: active_cdp(owner_pkh, iasset_name, new_minted_total, timestamp_ms, accumulator),
     }
 
     // Return Staking UTxO (with empty datum)
@@ -696,8 +749,8 @@ tx adjust_cdp_burn(
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
-        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
-        iassets_to_burn: AnyAsset(iasset_policy_id, iasset_name, burn_amount),
+        cdp_nft: cdp_nft(),
+        iassets_to_burn: iasset(iasset_name, burn_amount),
     }
 
     validity {
@@ -775,19 +828,7 @@ tx adjust_cdp_burn(
     output cdp_output {
         to: CdpUserAddr,
         amount: Ada(new_collateral) + cdp_nft,
-        datum: CDPDatum {
-            cdp_inner: CDPFields {
-                cdp_owner: MaybePkh::JustPkh {
-                    value: owner_pkh,
-                },
-                cdp_iasset: iasset_name,
-                cdp_minted_amount: new_minted_total,
-                cdp_interest: CdpInterest::ActiveTracking {
-                    timestamp: timestamp_ms,
-                    accumulator: accumulator,
-                },
-            },
-        },
+        datum: active_cdp(owner_pkh, iasset_name, new_minted_total, timestamp_ms, accumulator),
     }
 
     // Return Staking UTxO (with empty datum)
@@ -867,8 +908,8 @@ tx close_cdp(
     cdp_manager_utxo: UtxoRef,
 ) {
     locals {
-        cdp_nft: AnyAsset(cdp_nft_policy_id, cdp_nft_name, 1),
-        iassets_to_burn: AnyAsset(iasset_policy_id, iasset_name, burn_amount),
+        cdp_nft: cdp_nft(),
+        iassets_to_burn: iasset(iasset_name, burn_amount),
     }
 
     validity {
@@ -980,18 +1021,7 @@ tx close_cdp(
     output sp_output {
         to: StabilityPoolScript,
         amount: sp_input - iassets_to_burn,
-        datum: StabilityDatum::PoolState {
-            sp_content: PoolContent {
-                sp_iasset: pool_iasset,
-                sp_snapshot: StabilityPoolSnapshot {
-                    snapshot_p: sp_snapshot_p,
-                    snapshot_d: sp_snapshot_d,
-                    snapshot_s: sp_snapshot_s,
-                    snapshot_epoch: sp_snapshot_epoch,
-                    snapshot_scale: sp_snapshot_scale,
-                },
-            },
-        },
+        datum: pool_state(pool_iasset, sp_snapshot_p, sp_snapshot_d, sp_snapshot_s, sp_snapshot_epoch, sp_snapshot_scale),
     }
 
     // User gets back all collateral + change
@@ -1043,7 +1073,7 @@ tx create_sp_account(
     sp_snapshot_scale: Int,
 ) {
     locals {
-        iasset_deposit: AnyAsset(iasset_policy_id, iasset_name, deposit_amount),
+        iasset_deposit: iasset(iasset_name, deposit_amount),
     }
 
     validity {
@@ -1085,18 +1115,7 @@ tx create_sp_account(
     output sp_output {
         to: StabilityPoolScript,
         amount: sp_input + iasset_deposit,
-        datum: StabilityDatum::PoolState {
-            sp_content: PoolContent {
-                sp_iasset: iasset_name,
-                sp_snapshot: StabilityPoolSnapshot {
-                    snapshot_p: sp_snapshot_p,
-                    snapshot_d: sp_snapshot_d,
-                    snapshot_s: sp_snapshot_s,
-                    snapshot_epoch: sp_snapshot_epoch,
-                    snapshot_scale: sp_snapshot_scale,
-                },
-            },
-        },
+        datum: pool_state(iasset_name, sp_snapshot_p, sp_snapshot_d, sp_snapshot_s, sp_snapshot_epoch, sp_snapshot_scale),
     }
 
     // Return Collector UTxO
@@ -1195,25 +1214,15 @@ tx adjust_sp_account(
     output account_output {
         to: StabilityPoolScript,
         amount: account_input,
-        datum: StabilityDatum::Account {
-            acc_content: AccountContent {
-                acc_owner: owner_pkh,
-                acc_iasset: iasset_name,
-                acc_snapshot: StabilityPoolSnapshot {
-                    snapshot_p: acc_snapshot_p,
-                    snapshot_d: acc_snapshot_d,
-                    snapshot_s: acc_snapshot_s,
-                    snapshot_epoch: acc_snapshot_epoch,
-                    snapshot_scale: acc_snapshot_scale,
-                },
-                acc_request: MaybeAction::JustAction {
-                    act_value: AccountAction::ActAdjust {
-                        act_amount: deposit_change,
-                        act_output_addr: output_addr,
-                    },
-                },
+        datum: account_with_request(
+            owner_pkh,
+            iasset_name,
+            snapshot(acc_snapshot_p, acc_snapshot_d, acc_snapshot_s, acc_snapshot_epoch, acc_snapshot_scale),
+            AccountAction::ActAdjust {
+                act_amount: deposit_change,
+                act_output_addr: output_addr,
             },
-        },
+        ),
     }
 
     // Return Collector UTxO
@@ -1308,24 +1317,14 @@ tx close_sp_account(
     output account_output {
         to: StabilityPoolScript,
         amount: account_input,
-        datum: StabilityDatum::Account {
-            acc_content: AccountContent {
-                acc_owner: owner_pkh,
-                acc_iasset: iasset_name,
-                acc_snapshot: StabilityPoolSnapshot {
-                    snapshot_p: acc_snapshot_p,
-                    snapshot_d: acc_snapshot_d,
-                    snapshot_s: acc_snapshot_s,
-                    snapshot_epoch: acc_snapshot_epoch,
-                    snapshot_scale: acc_snapshot_scale,
-                },
-                acc_request: MaybeAction::JustAction {
-                    act_value: AccountAction::ActClose {
-                        act_close_addr: output_addr,
-                    },
-                },
+        datum: account_with_request(
+            owner_pkh,
+            iasset_name,
+            snapshot(acc_snapshot_p, acc_snapshot_d, acc_snapshot_s, acc_snapshot_epoch, acc_snapshot_scale),
+            AccountAction::ActClose {
+                act_close_addr: output_addr,
             },
-        },
+        ),
     }
 
     // Return Collector UTxO
