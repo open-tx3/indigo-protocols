@@ -408,14 +408,14 @@ tx create_cdp(
     }
 
     // Spend Collector UTxO (continuity — goes back to CollectorScript)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // Spend CDPCreator UTxO (auth token — goes back to CdpCreatorScript)
-    input creator_input {
+    input creator {
         ref: creator_utxo,
         datum_is: UnitDatum,
         redeemer: CDPCreatorRedeemer::CreateCDP {
@@ -427,7 +427,7 @@ tx create_cdp(
     }
 
     // User provides ADA for collateral + fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: Ada(collateral_lovelace) + fees,
     }
@@ -446,7 +446,7 @@ tx create_cdp(
 
     // New CDP UTxO at the CDP user address (script payment + user staking key)
     // Contains: collateral ADA + CDP NFT + inline CDPDatum (double-wrapped)
-    output cdp_output {
+    output cdp {
         to: CdpUserAddr,
         amount: Ada(collateral_lovelace) + cdp_nft,
         datum: CDPDatum {
@@ -465,23 +465,23 @@ tx create_cdp(
     }
 
     // Return CDPCreator auth token (with inline unit datum)
-    output {
+    output creator_return {
         to: CdpCreatorScript,
-        amount: creator_input,
+        amount: creator,
         datum: UnitDatum {},
     }
 
     // Return Collector UTxO (with inline unit datum)
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // User gets minted iAssets + change
-    output {
+    output change {
         to: User,
-        amount: source - Ada(collateral_lovelace) - fees + iasset_tokens,
+        amount: payment - Ada(collateral_lovelace) - fees + iasset_tokens,
     }
 
     collateral {
@@ -577,7 +577,7 @@ tx adjust_cdp_mint(
     }
 
     // Spend existing CDP UTxO
-    input cdp_input {
+    input cdp {
         ref: cdp_utxo,
         datum_is: CDPDatum,
         redeemer: CDPRedeemer::AdjustCDP {
@@ -588,21 +588,21 @@ tx adjust_cdp_mint(
     }
 
     // Companion Staking input (required by on-chain validators)
-    input staking_input {
+    input staking {
         ref: staking_utxo,
         datum_is: UnitDatum,
         redeemer: StakingRedeemer::StUnstake {},
     }
 
     // Spend Collector UTxO (continuity)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // User provides additional ADA if needed
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees,
     }
@@ -614,7 +614,7 @@ tx adjust_cdp_mint(
     }
 
     // Updated CDP UTxO (same address, updated datum)
-    output cdp_output {
+    output cdp_update {
         to: CdpUserAddr,
         amount: Ada(new_collateral) + cdp_nft,
         datum: CDPDatum {
@@ -633,23 +633,23 @@ tx adjust_cdp_mint(
     }
 
     // Return Staking UTxO (with empty datum)
-    output {
+    output staking_return {
         to: StakingScript,
-        amount: staking_input,
+        amount: staking,
         datum: UnitDatum {},
     }
 
     // Return Collector UTxO (with inline unit datum)
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // User gets newly minted iAssets + change
-    output {
+    output change {
         to: User,
-        amount: source + cdp_input - Ada(new_collateral) - cdp_nft - fees + new_iassets,
+        amount: payment + cdp - Ada(new_collateral) - cdp_nft - fees + new_iassets,
     }
 
     collateral {
@@ -735,7 +735,7 @@ tx adjust_cdp_burn(
     }
 
     // Spend existing CDP UTxO
-    input cdp_input {
+    input cdp {
         ref: cdp_utxo,
         datum_is: CDPDatum,
         redeemer: CDPRedeemer::AdjustCDP {
@@ -746,21 +746,21 @@ tx adjust_cdp_burn(
     }
 
     // Companion Staking input (required by on-chain validators)
-    input staking_input {
+    input staking {
         ref: staking_utxo,
         datum_is: UnitDatum,
         redeemer: StakingRedeemer::StUnstake {},
     }
 
     // Spend Collector UTxO (continuity)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // User provides iAssets to burn + fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees + iassets_to_burn,
     }
@@ -772,7 +772,7 @@ tx adjust_cdp_burn(
     }
 
     // Updated CDP UTxO (less debt)
-    output cdp_output {
+    output cdp_update {
         to: CdpUserAddr,
         amount: Ada(new_collateral) + cdp_nft,
         datum: CDPDatum {
@@ -791,23 +791,23 @@ tx adjust_cdp_burn(
     }
 
     // Return Staking UTxO (with empty datum)
-    output {
+    output staking_return {
         to: StakingScript,
-        amount: staking_input,
+        amount: staking,
         datum: UnitDatum {},
     }
 
     // Return Collector UTxO (with inline unit datum)
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // User gets back freed collateral + change
-    output {
+    output change {
         to: User,
-        amount: source + cdp_input - Ada(new_collateral) - cdp_nft - fees - iassets_to_burn,
+        amount: payment + cdp - Ada(new_collateral) - cdp_nft - fees - iassets_to_burn,
     }
 
     collateral {
@@ -916,7 +916,7 @@ tx close_cdp(
     }
 
     // Spend CDP UTxO (close it)
-    input cdp_input {
+    input cdp {
         ref: cdp_utxo,
         datum_is: CDPDatum,
         redeemer: CDPRedeemer::CloseCDP {
@@ -925,28 +925,28 @@ tx close_cdp(
     }
 
     // Spend Collector UTxO (continuity)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // Spend Stability Pool UTxO (continuity)
-    input sp_input {
+    input stability_pool {
         ref: stability_pool_utxo,
         datum_is: StabilityDatum,
         redeemer: StabilityPoolRedeemer::SPLiquidateCDP {},
     }
 
     // Spend Staking UTxO (continuity)
-    input staking_input {
+    input staking {
         ref: staking_utxo,
         datum_is: UnitDatum,
         redeemer: StakingRedeemer::StUnstake {},
     }
 
     // User provides iAssets to burn + fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees + iassets_to_burn,
     }
@@ -964,22 +964,22 @@ tx close_cdp(
     }
 
     // Return Staking UTxO (updated)
-    output {
+    output staking_return {
         to: StakingScript,
-        amount: staking_input,
+        amount: staking,
     }
 
     // Return Collector UTxO
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // Return Stability Pool UTxO (updated with burned iAssets removed)
-    output sp_output {
+    output pool_update {
         to: StabilityPoolScript,
-        amount: sp_input - iassets_to_burn,
+        amount: stability_pool - iassets_to_burn,
         datum: StabilityDatum::PoolState {
             sp_content: PoolContent {
                 sp_iasset: pool_iasset,
@@ -995,9 +995,9 @@ tx close_cdp(
     }
 
     // User gets back all collateral + change
-    output {
+    output change {
         to: User,
-        amount: source + cdp_input - cdp_nft - fees - iassets_to_burn,
+        amount: payment + cdp - cdp_nft - fees - iassets_to_burn,
     }
 
     collateral {
@@ -1060,7 +1060,7 @@ tx create_sp_account(
     }
 
     // Spend Stability Pool UTxO (continuity)
-    input sp_input {
+    input stability_pool {
         ref: sp_utxo,
         datum_is: StabilityDatum,
         redeemer: StabilityPoolRedeemer::SPRequestAction {
@@ -1069,22 +1069,22 @@ tx create_sp_account(
     }
 
     // Spend Collector UTxO (continuity)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // User provides iAsset tokens + ADA for fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees + iasset_deposit,
     }
 
     // Updated Stability Pool UTxO
-    output sp_output {
+    output pool_update {
         to: StabilityPoolScript,
-        amount: sp_input + iasset_deposit,
+        amount: stability_pool + iasset_deposit,
         datum: StabilityDatum::PoolState {
             sp_content: PoolContent {
                 sp_iasset: iasset_name,
@@ -1100,16 +1100,16 @@ tx create_sp_account(
     }
 
     // Return Collector UTxO
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // User change
-    output {
+    output change {
         to: User,
-        amount: source - fees - iasset_deposit,
+        amount: payment - fees - iasset_deposit,
     }
 
     collateral {
@@ -1167,7 +1167,7 @@ tx adjust_sp_account(
     }
 
     // Spend Account UTxO (update accRequest field)
-    input account_input {
+    input account {
         ref: account_utxo,
         datum_is: StabilityDatum,
         redeemer: StabilityPoolRedeemer::SPRequestAction {
@@ -1179,22 +1179,22 @@ tx adjust_sp_account(
     }
 
     // Spend Collector UTxO (continuity)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // User provides ADA for fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees,
     }
 
     // Updated Account UTxO — set accRequest to Adjust
-    output account_output {
+    output account_update {
         to: StabilityPoolScript,
-        amount: account_input,
+        amount: account,
         datum: StabilityDatum::Account {
             acc_content: AccountContent {
                 acc_owner: owner_pkh,
@@ -1217,16 +1217,16 @@ tx adjust_sp_account(
     }
 
     // Return Collector UTxO
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // User change
-    output {
+    output change {
         to: User,
-        amount: source - fees,
+        amount: payment - fees,
     }
 
     collateral {
@@ -1281,7 +1281,7 @@ tx close_sp_account(
     }
 
     // Spend Account UTxO (set accRequest = Just(Close))
-    input account_input {
+    input account {
         ref: account_utxo,
         datum_is: StabilityDatum,
         redeemer: StabilityPoolRedeemer::SPRequestAction {
@@ -1292,22 +1292,22 @@ tx close_sp_account(
     }
 
     // Spend Collector UTxO (continuity)
-    input collector_input {
+    input collector {
         ref: collector_utxo,
         datum_is: UnitDatum,
         redeemer: CollectorRedeemer::Collect {},
     }
 
     // User provides ADA for fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees,
     }
 
     // Updated Account UTxO — set accRequest to Close
-    output account_output {
+    output account_update {
         to: StabilityPoolScript,
-        amount: account_input,
+        amount: account,
         datum: StabilityDatum::Account {
             acc_content: AccountContent {
                 acc_owner: owner_pkh,
@@ -1329,16 +1329,16 @@ tx close_sp_account(
     }
 
     // Return Collector UTxO
-    output {
+    output collector_return {
         to: CollectorScript,
-        amount: collector_input,
+        amount: collector,
         datum: UnitDatum {},
     }
 
     // User change
-    output {
+    output change {
         to: User,
-        amount: source - fees,
+        amount: payment - fees,
     }
 
     collateral {
@@ -1395,7 +1395,7 @@ tx create_staking(
     }
 
     // Spend Staking Manager UTxO (continuity — updated totalStake)
-    input manager_input {
+    input manager {
         ref: manager_utxo,
         datum_is: StakingDatum,
         redeemer: StakingRedeemer::StCreateStakingPosition {
@@ -1404,9 +1404,9 @@ tx create_staking(
     }
 
     // User provides INDY tokens + ADA for fees + min UTxO for position + minUTxO for change
-    input* source {
+    input* payment {
         from: User,
-        min_amount: fees + indy_tokens + min_utxo(position_output) + min_utxo(change_output),
+        min_amount: fees + indy_tokens + min_utxo(position) + min_utxo(change),
     }
 
     // Mint +1 STAKING_POSITION NFT (authenticates the new position UTxO)
@@ -1417,9 +1417,9 @@ tx create_staking(
 
     // Updated Staking Manager — same assets, totalStake increased by indy_amount,
     // snapshot unchanged (it only moves forward on Distribute).
-    output manager_output {
+    output manager_update {
         to: StakingScript,
-        amount: manager_input,
+        amount: manager,
         datum: StakingDatum::StakingManager {
             sm_content: StakingManagerContent {
                 st_total_stake: old_total_stake + indy_amount,
@@ -1429,9 +1429,9 @@ tx create_staking(
     }
 
     // New Staking Position — owner, empty lockedAmount map, snapshot = manager's current.
-    output position_output {
+    output position {
         to: StakingScript,
-        amount: min_utxo(position_output) + indy_tokens + staking_position_nft,
+        amount: min_utxo(position) + indy_tokens + staking_position_nft,
         datum: StakingDatum::StakingPosition {
             sp_content: StakingPositionContent {
                 st_owner: owner_pkh,
@@ -1442,9 +1442,9 @@ tx create_staking(
     }
 
     // User change
-    output change_output {
+    output change {
         to: User,
-        amount: source - fees - indy_tokens - min_utxo(position_output),
+        amount: payment - fees - indy_tokens - min_utxo(position),
     }
 
     collateral {
@@ -1493,7 +1493,7 @@ tx adjust_staking(
     }
 
     // Spend Staking Position UTxO
-    input position_input {
+    input position {
         ref: position_utxo,
         datum_is: UnitDatum,
         redeemer: StakingRedeemer::StAdjustStakedAmount {
@@ -1502,22 +1502,22 @@ tx adjust_staking(
     }
 
     // User provides more INDY (if adding) + fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees + indy_change,
     }
 
     // Updated Staking Position UTxO (on-chain uses empty datum)
-    output {
+    output position_update {
         to: StakingScript,
-        amount: position_input + indy_change,
+        amount: position + indy_change,
         datum: UnitDatum {},
     }
 
     // User change
-    output {
+    output change {
         to: User,
-        amount: source - fees - indy_change,
+        amount: payment - fees - indy_change,
     }
 
     collateral {
@@ -1555,22 +1555,22 @@ tx unstake(
     }
 
     // Spend Staking Position UTxO (consumed entirely)
-    input position_input {
+    input position {
         ref: position_utxo,
         datum_is: UnitDatum,
         redeemer: StakingRedeemer::StUnstake {},
     }
 
     // User provides ADA for fees
-    input* source {
+    input* payment {
         from: User,
         min_amount: fees,
     }
 
     // User gets back all INDY + accumulated ADA rewards
-    output {
+    output payout {
         to: User,
-        amount: source + position_input - fees,
+        amount: payment + position - fees,
     }
 
     collateral {
